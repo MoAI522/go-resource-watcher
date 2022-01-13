@@ -1,11 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
 	"path"
+	"path/filepath"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"gopkg.in/yaml.v2"
@@ -37,6 +40,7 @@ func main() {
 	defer watcher.Close()
 
 	done := make(chan bool)
+	fsEvent := make(chan fsnotify.Event)
 	go func() {
 		for {
 			select {
@@ -44,32 +48,7 @@ func main() {
 				if !ok {
 					return
 				}
-				switch event.Op {
-				case fsnotify.Write:
-					src_path := event.Name
-					dst_path := path.Join(config.Destination, path.Base(event.Name))
-					src, err := os.Open(src_path)
-					if err != nil {
-						log.Fatal(err)
-						return
-					}
-					defer src.Close()
-
-					dst, err := os.Create(dst_path)
-					if err != nil {
-						log.Fatal(err)
-						return
-					}
-					defer dst.Close()
-
-					_, err = io.Copy(dst, src)
-					if err != nil {
-						log.Fatal(err)
-						return
-					}
-					log.Printf("Copied: %s -> %s", src_path, dst_path)
-					break
-				}
+				fsEvent <- event
 			case err, ok := <-watcher.Errors:
 				if !ok {
 					return
@@ -79,9 +58,47 @@ func main() {
 		}
 	}()
 
+	go func() {
+		for {
+			event := <-fsEvent
+			if event.Op&fsnotify.Write == fsnotify.Write {
+				for ok := false; !ok; ok = CopyFile(event.Name, config) {
+					time.Sleep(time.Second * 1)
+				}
+			}
+		}
+	}()
+
 	err = watcher.Add(config.Target)
 	if err != nil {
 		log.Fatal(err)
 	}
 	<-done
+}
+
+func CopyFile(src_path string, config TConfig) bool {
+	dst_path := path.Join(config.Destination, filepath.Base(src_path))
+	fmt.Printf("%s %s\n", dst_path, filepath.Base(src_path))
+	src, err := os.Open(src_path)
+	if err != nil {
+		log.Fatal(err)
+		return false
+	}
+	defer src.Close()
+
+	dst, err := os.Create(dst_path)
+	if err != nil {
+		log.Fatal(err)
+		return false
+	}
+	defer dst.Close()
+
+	_, err = io.Copy(dst, src)
+	if err != nil {
+		log.Fatal(err)
+		return false
+	}
+	log.Printf("Copied: %s -> %s", src_path, dst_path)
+
+	return true
 }
